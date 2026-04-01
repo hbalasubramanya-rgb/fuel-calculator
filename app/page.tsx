@@ -12,12 +12,12 @@ export default function Home() {
                 Fuel Calculator
               </span>
               <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-950 sm:text-5xl lg:text-6xl">
-                Plan the cost of any drive before you leave.
+                Plan the cost of any drive with live route distance and local fuel pricing.
               </h1>
               <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
-                A simple trip estimator for fuel usage, total spend, and
-                cost-per-kilometer. Useful for commutes, road trips, and quick
-                budget checks.
+                Choose a vehicle, map an origin and destination, auto-detect a
+                nearby fuel price, and see fuel usage, total spend, and
+                cost-per-kilometer before you leave.
               </p>
             </div>
 
@@ -26,10 +26,10 @@ export default function Home() {
                 Quick formula
               </p>
               <p className="text-sm leading-6 text-slate-300">
-                Fuel needed = distance / efficiency
+                Fuel needed = route distance / efficiency
               </p>
               <p className="text-sm leading-6 text-slate-300">
-                Total cost = fuel needed x fuel price
+                Total cost = fuel needed x local fuel price
               </p>
             </div>
           </div>

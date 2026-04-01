@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useEffectEvent, useState } from 'react'
 
 const numberFormat = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
@@ -13,43 +13,98 @@ const currencyFormat = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 })
 
-type FieldConfig = {
-  id: 'distance' | 'efficiency' | 'price'
-  label: string
-  suffix: string
-  step: string
-  help: string
+type FuelType = 'gasoline' | 'premium' | 'diesel'
+
+type VehiclePreset = {
+  id: string
+  name: string
+  fuelType: FuelType
+  efficiency: string
+  note: string
 }
 
-const fields: FieldConfig[] = [
+type RouteResult = {
+  distanceKm: number
+  durationMinutes: number
+  originLabel: string
+  destinationLabel: string
+}
+
+type FuelLookupResult = {
+  locationLabel: string
+  pricePerLiter: number
+  fuelType: FuelType
+  sourceLabel: string
+  releaseDate: string | null
+  estimated: boolean
+}
+
+const vehiclePresets: VehiclePreset[] = [
   {
-    id: 'distance',
-    label: 'Trip distance',
-    suffix: 'km',
-    step: '0.1',
-    help: 'How far you are driving.',
+    id: 'compact-petrol',
+    name: 'Compact car',
+    fuelType: 'gasoline',
+    efficiency: '17.8',
+    note: 'Good for city driving and short road trips.',
   },
   {
-    id: 'efficiency',
-    label: 'Fuel efficiency',
-    suffix: 'km/L',
-    step: '0.1',
-    help: 'Average distance your vehicle covers per liter.',
+    id: 'family-sedan',
+    name: 'Family sedan',
+    fuelType: 'gasoline',
+    efficiency: '14.5',
+    note: 'Balanced comfort and fuel economy.',
   },
   {
-    id: 'price',
-    label: 'Fuel price',
-    suffix: 'per L',
-    step: '0.01',
-    help: 'Current fuel cost in your area.',
+    id: 'hybrid',
+    name: 'Hybrid',
+    fuelType: 'gasoline',
+    efficiency: '23.5',
+    note: 'Lower fuel use for frequent commuting.',
+  },
+  {
+    id: 'suv',
+    name: 'SUV',
+    fuelType: 'premium',
+    efficiency: '10.4',
+    note: 'Higher fuel use with premium fuel.',
+  },
+  {
+    id: 'pickup-diesel',
+    name: 'Pickup truck',
+    fuelType: 'diesel',
+    efficiency: '9.1',
+    note: 'Diesel preset for heavier loads.',
+  },
+  {
+    id: 'motorcycle',
+    name: 'Motorcycle',
+    fuelType: 'gasoline',
+    efficiency: '34.0',
+    note: 'Best efficiency for solo travel.',
   },
 ]
 
 export default function FuelCalculator() {
+  const [selectedVehicleId, setSelectedVehicleId] = useState(
+    vehiclePresets[1].id
+  )
+  const [origin, setOrigin] = useState('')
+  const [destination, setDestination] = useState('')
   const [distance, setDistance] = useState('240')
-  const [efficiency, setEfficiency] = useState('14.5')
-  const [price, setPrice] = useState('1.42')
+  const [efficiency, setEfficiency] = useState(vehiclePresets[1].efficiency)
+  const [price, setPrice] = useState('1.05')
+  const [fuelType, setFuelType] = useState<FuelType>(vehiclePresets[1].fuelType)
   const [includeReturn, setIncludeReturn] = useState(false)
+  const [routeStatus, setRouteStatus] = useState<string | null>(null)
+  const [routeLoading, setRouteLoading] = useState(false)
+  const [routeSummary, setRouteSummary] = useState<RouteResult | null>(null)
+  const [fuelStatus, setFuelStatus] = useState<string | null>(null)
+  const [fuelLoading, setFuelLoading] = useState(false)
+  const [fuelLookup, setFuelLookup] = useState<FuelLookupResult | null>(null)
+  const [currentCoords, setCurrentCoords] = useState<{
+    latitude: number
+    longitude: number
+  } | null>(null)
 
   const tripDistance = parseNumber(distance) * (includeReturn ? 2 : 1)
   const fuelEfficiency = parseNumber(efficiency)
@@ -60,84 +115,361 @@ export default function FuelCalculator() {
   const totalCost = litersNeeded * fuelPrice
   const costPerKm = tripDistance > 0 ? totalCost / tripDistance : 0
 
+  const detectFuelPrice = useEffectEvent(
+    async (latitude: number, longitude: number) => {
+      setFuelLoading(true)
+      setFuelStatus('Finding a local fuel price...')
+
+      try {
+        const params = new URLSearchParams({
+          lat: latitude.toString(),
+          lon: longitude.toString(),
+          fuelType,
+        })
+        const response = await fetch(`/api/location-fuel?${params.toString()}`)
+        const payload = (await response.json()) as
+          | { error: string }
+          | FuelLookupResult
+
+        if ('error' in payload) {
+          throw new Error(payload.error || 'Unable to detect a fuel price.')
+        }
+
+        setPrice(payload.pricePerLiter.toFixed(2))
+        setFuelLookup(payload)
+        setOrigin((currentOrigin) =>
+          currentOrigin.trim() ? currentOrigin : payload.locationLabel
+        )
+
+        const sourceSuffix = payload.releaseDate
+          ? ` Updated ${payload.releaseDate}.`
+          : ''
+        setFuelStatus(
+          `Fuel price detected for ${payload.locationLabel}.${sourceSuffix}`
+        )
+      } catch (error) {
+        setFuelLookup(null)
+        setFuelStatus(
+          error instanceof Error
+            ? error.message
+            : 'Unable to detect a fuel price.'
+        )
+      } finally {
+        setFuelLoading(false)
+      }
+    }
+  )
+
+  useEffect(() => {
+    if (!currentCoords) return
+
+    void detectFuelPrice(currentCoords.latitude, currentCoords.longitude)
+  }, [currentCoords, fuelType])
+
+  async function handleRouteCalculation() {
+    if (!origin.trim() || !destination.trim()) {
+      setRouteStatus('Enter both an origin and a destination.')
+      return
+    }
+
+    setRouteLoading(true)
+    setRouteStatus(null)
+
+    try {
+      const params = new URLSearchParams({
+        origin: origin.trim(),
+        destination: destination.trim(),
+      })
+
+      const response = await fetch(`/api/route?${params.toString()}`)
+      const payload = (await response.json()) as
+        | { error: string }
+        | RouteResult
+
+      if ('error' in payload) {
+        throw new Error(payload.error || 'Unable to calculate this route.')
+      }
+
+      setDistance(payload.distanceKm.toFixed(1))
+      setRouteSummary(payload)
+      setRouteStatus(
+        `Route ready: ${payload.originLabel} to ${payload.destinationLabel}.`
+      )
+    } catch (error) {
+      setRouteSummary(null)
+      setRouteStatus(
+        error instanceof Error
+          ? error.message
+          : 'Unable to calculate this route right now.'
+      )
+    } finally {
+      setRouteLoading(false)
+    }
+  }
+
+  async function detectCurrentLocation() {
+    if (!navigator.geolocation) {
+      setFuelStatus('Geolocation is not available in this browser.')
+      return
+    }
+
+    setFuelLoading(true)
+    setFuelStatus('Locating your device...')
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const nextCoords = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        }
+
+        setCurrentCoords(nextCoords)
+      },
+      (error) => {
+        setFuelLoading(false)
+        setFuelStatus(
+          error.code === error.PERMISSION_DENIED
+            ? 'Location access was denied. You can still enter fuel price manually.'
+            : 'Unable to read your current location.'
+        )
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    )
+  }
+
+  function handleVehicleSelection(vehicleId: string) {
+    const vehicle = vehiclePresets.find((preset) => preset.id === vehicleId)
+    if (!vehicle) return
+
+    setSelectedVehicleId(vehicle.id)
+    setEfficiency(vehicle.efficiency)
+    setFuelType(vehicle.fuelType)
+  }
+
+  const selectedVehicle =
+    vehiclePresets.find((vehicle) => vehicle.id === selectedVehicleId) ??
+    vehiclePresets[0]
+
   return (
-    <section className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
+    <section className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
       <div className="rounded-[2rem] border border-white/40 bg-white/85 p-6 shadow-[0_30px_90px_-50px_rgba(15,23,42,0.7)] backdrop-blur xl:p-8">
         <div className="flex flex-col gap-3 border-b border-slate-200 pb-5">
           <span className="w-fit rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-amber-900">
-            Interactive tool
+            Smart trip planner
           </span>
           <h2 className="text-2xl font-semibold tracking-tight text-slate-950">
-            Estimate fuel, total cost, and cost per kilometer.
+            Choose a vehicle, map the route, and auto-fill fuel price from your
+            location.
           </h2>
           <p className="max-w-2xl text-sm leading-6 text-slate-600">
-            Enter your route distance, your vehicle efficiency, and the current
-            pump price to get an instant trip estimate.
+            Route distance can be calculated from origin and destination, then
+            adjusted manually. Fuel pricing uses your device location with
+            region-based estimates and can always be overridden.
           </p>
         </div>
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-2">
-          {fields.map((field) => (
-            <label
-              key={field.id}
-              className={`flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-slate-50/90 p-4 ${
-                field.id === 'distance' ? 'sm:col-span-2' : ''
-              }`}
-            >
-              <span className="text-sm font-semibold text-slate-900">
-                {field.label}
-              </span>
-              <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                <input
-                  className="w-full border-none bg-transparent text-lg font-medium text-slate-950 outline-none placeholder:text-slate-400"
-                  inputMode="decimal"
-                  min="0"
-                  placeholder="0"
-                  step={field.step}
-                  type="number"
-                  value={getValue(field.id, { distance, efficiency, price })}
-                  onChange={(event) =>
-                    updateValue(field.id, event.target.value, {
-                      setDistance,
-                      setEfficiency,
-                      setPrice,
-                    })
-                  }
-                />
-                <span className="shrink-0 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                  {field.suffix}
-                </span>
+        <div className="mt-6 grid gap-4">
+          <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50/90 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">
+                  Vehicle selection
+                </p>
+                <p className="text-xs leading-5 text-slate-500">
+                  Presets update fuel type and average efficiency.
+                </p>
               </div>
-              <span className="text-xs leading-5 text-slate-500">
-                {field.help}
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+                {selectedVehicle.note}
               </span>
-            </label>
-          ))}
-        </div>
+            </div>
 
-        <label className="mt-5 flex items-center justify-between gap-4 rounded-[1.5rem] border border-slate-200 bg-slate-950 px-5 py-4 text-white">
-          <div>
-            <div className="text-sm font-semibold">Include return trip</div>
-            <div className="text-xs leading-5 text-slate-300">
-              Doubles the distance for round-trip planning.
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {vehiclePresets.map((vehicle) => {
+                const active = vehicle.id === selectedVehicleId
+
+                return (
+                  <button
+                    key={vehicle.id}
+                    className={`rounded-[1.25rem] border px-4 py-4 text-left transition ${
+                      active
+                        ? 'border-emerald-400 bg-emerald-50 shadow-[0_20px_40px_-28px_rgba(16,185,129,0.65)]'
+                        : 'border-slate-200 bg-white hover:border-emerald-200'
+                    }`}
+                    type="button"
+                    onClick={() => handleVehicleSelection(vehicle.id)}
+                  >
+                    <div className="text-sm font-semibold text-slate-950">
+                      {vehicle.name}
+                    </div>
+                    <div className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                      {vehicle.fuelType} · {vehicle.efficiency} km/L
+                    </div>
+                  </button>
+                )
+              })}
             </div>
           </div>
-          <button
-            aria-pressed={includeReturn}
-            className={`relative h-8 w-14 rounded-full transition ${
-              includeReturn ? 'bg-emerald-400' : 'bg-white/20'
-            }`}
-            type="button"
-            onClick={() => setIncludeReturn((current) => !current)}
-          >
-            <span
-              className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${
-                includeReturn ? 'left-7' : 'left-1'
-              }`}
+
+          <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50/90 p-4">
+            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">
+                  Route-based distance
+                </p>
+                <p className="text-xs leading-5 text-slate-500">
+                  Search a route to fill the trip distance automatically.
+                </p>
+              </div>
+              <button
+                className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300"
+                type="button"
+                onClick={detectCurrentLocation}
+              >
+                {fuelLoading ? 'Detecting location...' : 'Use my location'}
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <InputField
+                help="Starting point for the drive."
+                label="Origin"
+                placeholder="New York, NY"
+                value={origin}
+                onChange={setOrigin}
+              />
+              <InputField
+                help="Destination to map against the route."
+                label="Destination"
+                placeholder="Boston, MA"
+                value={destination}
+                onChange={setDestination}
+              />
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                disabled={routeLoading}
+                type="button"
+                onClick={handleRouteCalculation}
+              >
+                {routeLoading ? 'Calculating route...' : 'Calculate route'}
+              </button>
+              {routeStatus ? (
+                <p className="text-sm text-slate-600">{routeStatus}</p>
+              ) : null}
+            </div>
+
+            {routeSummary ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <InfoCard
+                  label="Driving distance"
+                  value={`${numberFormat.format(routeSummary.distanceKm)} km`}
+                />
+                <InfoCard
+                  label="Estimated duration"
+                  value={`${numberFormat.format(routeSummary.durationMinutes)} min`}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <NumberField
+              help="Filled from the route planner or editable by hand."
+              label="Trip distance"
+              step="0.1"
+              suffix="km"
+              value={distance}
+              onChange={setDistance}
             />
-            <span className="sr-only">Toggle return trip</span>
-          </button>
-        </label>
+            <label className="flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-slate-50/90 p-4">
+              <span className="text-sm font-semibold text-slate-900">
+                Fuel type
+              </span>
+              <select
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-base font-medium text-slate-950 outline-none"
+                value={fuelType}
+                onChange={(event) =>
+                  setFuelType(event.target.value as FuelType)
+                }
+              >
+                <option value="gasoline">Gasoline</option>
+                <option value="premium">Premium gasoline</option>
+                <option value="diesel">Diesel</option>
+              </select>
+              <span className="text-xs leading-5 text-slate-500">
+                Auto pricing follows the selected fuel type.
+              </span>
+            </label>
+            <NumberField
+              help="Updated by the vehicle preset or editable for your exact average."
+              label="Fuel efficiency"
+              step="0.1"
+              suffix="km/L"
+              value={efficiency}
+              onChange={setEfficiency}
+            />
+            <NumberField
+              help="Auto-detected from your location when available."
+              label="Fuel price"
+              step="0.01"
+              suffix="USD/L"
+              value={price}
+              onChange={setPrice}
+            />
+          </div>
+
+          <label className="flex items-center justify-between gap-4 rounded-[1.5rem] border border-slate-200 bg-slate-950 px-5 py-4 text-white">
+            <div>
+              <div className="text-sm font-semibold">Include return trip</div>
+              <div className="text-xs leading-5 text-slate-300">
+                Doubles the route distance for a round-trip estimate.
+              </div>
+            </div>
+            <button
+              aria-pressed={includeReturn}
+              className={`relative h-8 w-14 rounded-full transition ${
+                includeReturn ? 'bg-emerald-400' : 'bg-white/20'
+              }`}
+              type="button"
+              onClick={() => setIncludeReturn((current) => !current)}
+            >
+              <span
+                className={`absolute top-1 h-6 w-6 rounded-full bg-white transition ${
+                  includeReturn ? 'left-7' : 'left-1'
+                }`}
+              />
+              <span className="sr-only">Toggle return trip</span>
+            </button>
+          </label>
+
+          {fuelStatus || fuelLookup ? (
+            <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/80 p-4">
+              <p className="text-sm font-semibold text-emerald-950">
+                Fuel price detection
+              </p>
+              {fuelStatus ? (
+                <p className="mt-2 text-sm leading-6 text-emerald-900/80">
+                  {fuelStatus}
+                </p>
+              ) : null}
+              {fuelLookup ? (
+                <div className="mt-3 grid gap-2 text-sm text-emerald-950">
+                  <span>
+                    Source: {fuelLookup.sourceLabel}
+                    {fuelLookup.estimated ? ' (estimated)' : ''}
+                  </span>
+                  <span>
+                    Current value: {currencyFormat.format(fuelLookup.pricePerLiter)}{' '}
+                    per liter
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <aside className="flex flex-col gap-4 rounded-[2rem] bg-slate-950 p-6 text-white shadow-[0_30px_90px_-50px_rgba(15,23,42,0.95)] xl:p-8">
@@ -146,30 +478,35 @@ export default function FuelCalculator() {
             Estimated totals
           </p>
           <p className="mt-3 text-sm leading-6 text-slate-300">
-            Results update as you type. Set any field to zero to reset the
-            estimate.
+            Results update as route distance, fuel price, and vehicle preset
+            change.
           </p>
         </div>
 
         <MetricCard
-          label="Trip distance"
-          value={`${numberFormat.format(tripDistance)} km`}
+          label="Selected vehicle"
           tone="amber"
+          value={selectedVehicle.name}
+        />
+        <MetricCard
+          label="Trip distance"
+          tone="amber"
+          value={`${numberFormat.format(tripDistance)} km`}
         />
         <MetricCard
           label="Fuel needed"
-          value={`${numberFormat.format(litersNeeded)} L`}
           tone="emerald"
+          value={`${numberFormat.format(litersNeeded)} L`}
         />
         <MetricCard
           label="Total fuel cost"
-          value={currencyFormat.format(totalCost)}
           tone="sky"
+          value={currencyFormat.format(totalCost)}
         />
         <MetricCard
           label="Cost per kilometer"
-          value={currencyFormat.format(costPerKm)}
           tone="rose"
+          value={currencyFormat.format(costPerKm)}
         />
       </aside>
     </section>
@@ -206,38 +543,86 @@ function MetricCard({
   )
 }
 
+function NumberField({
+  label,
+  suffix,
+  step,
+  help,
+  value,
+  onChange,
+}: {
+  label: string
+  suffix: string
+  step: string
+  help: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-slate-50/90 p-4">
+      <span className="text-sm font-semibold text-slate-900">{label}</span>
+      <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <input
+          className="w-full border-none bg-transparent text-lg font-medium text-slate-950 outline-none placeholder:text-slate-400"
+          inputMode="decimal"
+          min="0"
+          placeholder="0"
+          step={step}
+          type="number"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <span className="shrink-0 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+          {suffix}
+        </span>
+      </div>
+      <span className="text-xs leading-5 text-slate-500">{help}</span>
+    </label>
+  )
+}
+
+function InputField({
+  label,
+  help,
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string
+  help: string
+  placeholder: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-4">
+      <span className="text-sm font-semibold text-slate-900">{label}</span>
+      <input
+        className="rounded-2xl border border-slate-200 px-4 py-3 text-base font-medium text-slate-950 outline-none placeholder:text-slate-400"
+        placeholder={placeholder}
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <span className="text-xs leading-5 text-slate-500">{help}</span>
+    </label>
+  )
+}
+
+function InfoCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+        {value}
+      </p>
+    </div>
+  )
+}
+
 function parseNumber(value: string) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
-}
-
-function getValue(
-  fieldId: FieldConfig['id'],
-  values: { distance: string; efficiency: string; price: string }
-) {
-  if (fieldId === 'distance') return values.distance
-  if (fieldId === 'efficiency') return values.efficiency
-  return values.price
-}
-
-function updateValue(
-  fieldId: FieldConfig['id'],
-  nextValue: string,
-  setters: {
-    setDistance: Dispatch<SetStateAction<string>>
-    setEfficiency: Dispatch<SetStateAction<string>>
-    setPrice: Dispatch<SetStateAction<string>>
-  }
-) {
-  if (fieldId === 'distance') {
-    setters.setDistance(nextValue)
-    return
-  }
-
-  if (fieldId === 'efficiency') {
-    setters.setEfficiency(nextValue)
-    return
-  }
-
-  setters.setPrice(nextValue)
 }

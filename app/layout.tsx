@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Fuel Calculator",
-  description: "Estimate trip fuel usage and fuel cost with a simple calculator.",
+  description:
+    "Estimate trip fuel usage and trip cost with route-based distance, local fuel pricing, and vehicle presets.",
 };
 
 export default function RootLayout({
