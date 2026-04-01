@@ -39,6 +39,8 @@ export async function GET(request: NextRequest) {
       `https://router.project-osrm.org/route/v1/driving/${originPoint.lon},${originPoint.lat};${destinationPoint.lon},${destinationPoint.lat}`
     )
     routeUrl.searchParams.set('overview', 'false')
+    routeUrl.searchParams.set('alternatives', 'true')
+    routeUrl.searchParams.set('steps', 'false')
 
     const routeResponse = await fetch(routeUrl, {
       headers: NOMINATIM_HEADERS,
@@ -49,17 +51,26 @@ export async function GET(request: NextRequest) {
     }
 
     const routePayload = (await routeResponse.json()) as OsrmResponse
-    const route = routePayload.routes?.[0]
+    const routes = routePayload.routes
+    const route = routes?.[0]
 
     if (routePayload.code !== 'Ok' || !route) {
       throw new Error('No drivable route was found for this trip.')
     }
+
+    const alternatives = routes.map((candidate, index) => ({
+      id: `route-${index + 1}`,
+      label: index === 0 ? 'Primary route' : `Alternative ${index}`,
+      distanceKm: roundTo(candidate.distance / 1000, 1),
+      durationMinutes: roundTo(candidate.duration / 60, 0),
+    }))
 
     return Response.json({
       distanceKm: roundTo(route.distance / 1000, 1),
       durationMinutes: roundTo(route.duration / 60, 0),
       originLabel: originPoint.display_name,
       destinationLabel: destinationPoint.display_name,
+      alternatives,
     })
   } catch (error) {
     return Response.json(

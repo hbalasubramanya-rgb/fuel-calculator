@@ -2,14 +2,14 @@
 
 import { useEffect, useEffectEvent, useState } from 'react'
 
-const numberFormat = new Intl.NumberFormat('en-US', {
+const numberFormat = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 2,
   minimumFractionDigits: 0,
 })
 
-const currencyFormat = new Intl.NumberFormat('en-US', {
+const currencyFormat = new Intl.NumberFormat('en-IN', {
   style: 'currency',
-  currency: 'USD',
+  currency: 'INR',
   maximumFractionDigits: 2,
 })
 
@@ -23,11 +23,19 @@ type VehiclePreset = {
   note: string
 }
 
+type RouteAlternative = {
+  id: string
+  label: string
+  distanceKm: number
+  durationMinutes: number
+}
+
 type RouteResult = {
   distanceKm: number
   durationMinutes: number
   originLabel: string
   destinationLabel: string
+  alternatives: RouteAlternative[]
 }
 
 type FuelLookupResult = {
@@ -92,7 +100,7 @@ export default function FuelCalculator() {
   const [destination, setDestination] = useState('')
   const [distance, setDistance] = useState('240')
   const [efficiency, setEfficiency] = useState(vehiclePresets[1].efficiency)
-  const [price, setPrice] = useState('1.05')
+  const [price, setPrice] = useState('102.50')
   const [fuelType, setFuelType] = useState<FuelType>(vehiclePresets[1].fuelType)
   const [includeReturn, setIncludeReturn] = useState(false)
   const [routeStatus, setRouteStatus] = useState<string | null>(null)
@@ -190,10 +198,17 @@ export default function FuelCalculator() {
         throw new Error(payload.error || 'Unable to calculate this route.')
       }
 
-      setDistance(payload.distanceKm.toFixed(1))
+      const cheapestAlternative = getCheapestAlternative(
+        payload.alternatives,
+        fuelEfficiency,
+        fuelPrice,
+        includeReturn
+      )
+
+      setDistance(cheapestAlternative.distanceKm.toFixed(1))
       setRouteSummary(payload)
       setRouteStatus(
-        `Route ready: ${payload.originLabel} to ${payload.destinationLabel}.`
+        `Route ready: ${payload.originLabel} to ${payload.destinationLabel}. Cheapest route selected by default.`
       )
     } catch (error) {
       setRouteSummary(null)
@@ -218,12 +233,10 @@ export default function FuelCalculator() {
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        const nextCoords = {
+        setCurrentCoords({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
-        }
-
-        setCurrentCoords(nextCoords)
+        })
       },
       (error) => {
         setFuelLoading(false)
@@ -250,6 +263,30 @@ export default function FuelCalculator() {
     vehiclePresets.find((vehicle) => vehicle.id === selectedVehicleId) ??
     vehiclePresets[0]
 
+  const cheapestAlternative = routeSummary
+    ? getCheapestAlternative(
+        routeSummary.alternatives,
+        fuelEfficiency,
+        fuelPrice,
+        includeReturn
+      )
+    : null
+
+  const fastestAlternative = routeSummary
+    ? getFastestAlternative(routeSummary.alternatives)
+    : null
+
+  const smartSuggestions = getSmartSuggestions({
+    tripDistance,
+    litersNeeded,
+    totalCost,
+    fuelEfficiency,
+    fuelType,
+    includeReturn,
+    cheapestAlternative,
+    fastestAlternative,
+  })
+
   return (
     <section className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
       <div className="rounded-[2rem] border border-white/40 bg-white/85 p-6 shadow-[0_30px_90px_-50px_rgba(15,23,42,0.7)] backdrop-blur xl:p-8">
@@ -263,8 +300,8 @@ export default function FuelCalculator() {
           </h2>
           <p className="max-w-2xl text-sm leading-6 text-slate-600">
             Route distance can be calculated from origin and destination, then
-            adjusted manually. Fuel pricing uses your device location with
-            region-based estimates and can always be overridden.
+            adjusted manually. Fuel pricing is shown in Indian rupees per liter
+            and can always be overridden.
           </p>
         </div>
 
@@ -303,7 +340,7 @@ export default function FuelCalculator() {
                       {vehicle.name}
                     </div>
                     <div className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">
-                      {vehicle.fuelType} · {vehicle.efficiency} km/L
+                      {vehicle.fuelType} - {vehicle.efficiency} km/L
                     </div>
                   </button>
                 )
@@ -334,14 +371,14 @@ export default function FuelCalculator() {
               <InputField
                 help="Starting point for the drive."
                 label="Origin"
-                placeholder="New York, NY"
+                placeholder="Delhi"
                 value={origin}
                 onChange={setOrigin}
               />
               <InputField
                 help="Destination to map against the route."
                 label="Destination"
-                placeholder="Boston, MA"
+                placeholder="Jaipur"
                 value={destination}
                 onChange={setDestination}
               />
@@ -364,12 +401,12 @@ export default function FuelCalculator() {
             {routeSummary ? (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <InfoCard
-                  label="Driving distance"
-                  value={`${numberFormat.format(routeSummary.distanceKm)} km`}
+                  label="Cheapest route distance"
+                  value={`${numberFormat.format(cheapestAlternative?.distanceKm ?? routeSummary.distanceKm)} km`}
                 />
                 <InfoCard
-                  label="Estimated duration"
-                  value={`${numberFormat.format(routeSummary.durationMinutes)} min`}
+                  label="Fastest route duration"
+                  value={`${numberFormat.format(fastestAlternative?.durationMinutes ?? routeSummary.durationMinutes)} min`}
                 />
               </div>
             ) : null}
@@ -415,7 +452,7 @@ export default function FuelCalculator() {
               help="Auto-detected from your location when available."
               label="Fuel price"
               step="0.01"
-              suffix="USD/L"
+              suffix="INR/L"
               value={price}
               onChange={setPrice}
             />
@@ -508,6 +545,27 @@ export default function FuelCalculator() {
           tone="rose"
           value={currencyFormat.format(costPerKm)}
         />
+
+        <div className="rounded-[1.5rem] border border-white/10 bg-white/5 px-5 py-4">
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
+            Smart suggestions
+          </p>
+          <div className="mt-3 grid gap-3">
+            {smartSuggestions.map((suggestion) => (
+              <div
+                key={suggestion.title}
+                className="rounded-[1rem] border border-white/10 bg-white/5 px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-white">
+                  {suggestion.title}
+                </p>
+                <p className="mt-1 text-sm leading-6 text-slate-300">
+                  {suggestion.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
       </aside>
     </section>
   )
@@ -625,4 +683,108 @@ function InfoCard({ label, value }: { label: string; value: string }) {
 function parseNumber(value: string) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function getCheapestAlternative(
+  alternatives: RouteAlternative[],
+  efficiency: number,
+  fuelPrice: number,
+  includeReturn: boolean
+) {
+  return [...alternatives].sort((left, right) => {
+    return (
+      estimateAlternativeCost(left, efficiency, fuelPrice, includeReturn) -
+      estimateAlternativeCost(right, efficiency, fuelPrice, includeReturn)
+    )
+  })[0]
+}
+
+function getFastestAlternative(alternatives: RouteAlternative[]) {
+  return [...alternatives].sort(
+    (left, right) => left.durationMinutes - right.durationMinutes
+  )[0]
+}
+
+function estimateAlternativeCost(
+  alternative: RouteAlternative,
+  efficiency: number,
+  fuelPrice: number,
+  includeReturn: boolean
+) {
+  const adjustedDistance = alternative.distanceKm * (includeReturn ? 2 : 1)
+  if (!efficiency || !fuelPrice) return adjustedDistance
+
+  return (adjustedDistance / efficiency) * fuelPrice
+}
+
+function getSmartSuggestions({
+  tripDistance,
+  litersNeeded,
+  totalCost,
+  fuelEfficiency,
+  fuelType,
+  includeReturn,
+  cheapestAlternative,
+  fastestAlternative,
+}: {
+  tripDistance: number
+  litersNeeded: number
+  totalCost: number
+  fuelEfficiency: number
+  fuelType: FuelType
+  includeReturn: boolean
+  cheapestAlternative: RouteAlternative | null
+  fastestAlternative: RouteAlternative | null
+}) {
+  const suggestions = [
+    {
+      title: 'Cheapest route',
+      description: cheapestAlternative
+        ? `${cheapestAlternative.label} is the lowest-cost option at about ${currencyFormat.format(
+            estimateAlternativeCost(
+              cheapestAlternative,
+              fuelEfficiency,
+              totalCost && litersNeeded ? totalCost / litersNeeded : 0,
+              includeReturn
+            )
+          )} in fuel for this trip.`
+        : 'Calculate a route to compare alternate paths by fuel cost.',
+    },
+    {
+      title: 'Fastest route',
+      description: fastestAlternative
+        ? `${fastestAlternative.label} is the quickest option at around ${numberFormat.format(
+            fastestAlternative.durationMinutes
+          )} minutes.`
+        : 'Fastest-route guidance appears after route calculation.',
+    },
+  ]
+
+  if (fuelEfficiency < 12) {
+    suggestions.push({
+      title: 'Fuel-saving tip',
+      description:
+        'Your selected vehicle is on the heavier side for fuel use. Steady speeds, lower AC load, and avoiding hard acceleration will make the biggest difference.',
+    })
+  } else if (tripDistance > 250) {
+    suggestions.push({
+      title: 'Fuel-saving tip',
+      description:
+        'For longer drives, keeping tyre pressure correct and cruising at a steady highway speed usually saves more fuel than route micro-optimisation.',
+    })
+  } else if (fuelType === 'premium') {
+    suggestions.push({
+      title: 'Fuel-saving tip',
+      description:
+        'Premium fuel trips are costlier per kilometer. If your vehicle allows it, confirm whether regular petrol is acceptable for non-performance driving.',
+    })
+  } else {
+    suggestions.push({
+      title: 'Fuel-saving tip',
+      description:
+        'Smooth throttle inputs, fewer rapid stops, and combining errands into one drive are the simplest ways to cut fuel spend.',
+    })
+  }
+
+  return suggestions
 }

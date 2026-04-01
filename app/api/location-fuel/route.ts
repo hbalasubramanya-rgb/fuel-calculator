@@ -20,6 +20,7 @@ const NOMINATIM_HEADERS = {
 }
 
 const GALLON_TO_LITER = 3.78541
+const USD_TO_INR = 83.25
 
 const FALLBACK_PRICES: Record<
   string,
@@ -123,13 +124,16 @@ export async function GET(request: NextRequest) {
       .filter(Boolean)
       .join(', ')
 
-    if (countryCode === 'US' && stateCode) {
+  if (countryCode === 'US' && stateCode) {
       const regionalPrice = await getLatestUsRegionalPrice(stateCode, fuelType)
 
       return Response.json({
         locationLabel,
         fuelType,
-        pricePerLiter: roundTo(regionalPrice.usdPerGallon / GALLON_TO_LITER, 2),
+        pricePerLiter: roundTo(
+          (regionalPrice.usdPerGallon / GALLON_TO_LITER) * USD_TO_INR,
+          2
+        ),
         sourceLabel: regionalPrice.sourceLabel,
         releaseDate: regionalPrice.releaseDate,
         estimated: regionalPrice.estimated,
@@ -147,7 +151,7 @@ export async function GET(request: NextRequest) {
     return Response.json({
       locationLabel,
       fuelType,
-      pricePerLiter: fallback[fuelType],
+      pricePerLiter: roundTo(fallback[fuelType] * USD_TO_INR, 2),
       sourceLabel: `Built-in ${address.country} fuel estimate`,
       releaseDate: null,
       estimated: true,
